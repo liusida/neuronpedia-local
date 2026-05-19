@@ -47,6 +47,7 @@ class LocalSAESpec:
     source: str
     layer: int
     hook_point: str
+    hidden_location: Literal["resid_pre", "resid_post"]
     repo_id: str = "jbloom/GPT2-Small-SAEs-Reformatted"
 
 
@@ -261,14 +262,23 @@ def local_sae_spec(model_id: str, source: str) -> LocalSAESpec | None:
     match = re.match(r"^(\d+)-res-jb$", source)
     if model_id != "gpt2-small" or not match:
         return None
-    layer = int(match.group(1))
-    if layer < 0 or layer > 11:
+    source_layer = int(match.group(1))
+    if source_layer < 0 or source_layer > 12:
         return None
+    if source_layer == 12:
+        return LocalSAESpec(
+            model_id=model_id,
+            source=source,
+            layer=11,
+            hook_point="blocks.11.hook_resid_post",
+            hidden_location="resid_post",
+        )
     return LocalSAESpec(
         model_id=model_id,
         source=source,
-        layer=layer,
-        hook_point=f"blocks.{layer}.hook_resid_pre",
+        layer=source_layer,
+        hook_point=f"blocks.{source_layer}.hook_resid_pre",
+        hidden_location="resid_pre",
     )
 
 
@@ -361,18 +371,13 @@ def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: L
         attention_mask = attention_mask.to(device)
 
     with torch.inference_mode():
-        outputs = model(
+        hidden = local_hidden_activations(
+            model=model,
             input_ids=input_ids,
             attention_mask=attention_mask,
-            output_hidden_states=True,
-            use_cache=False,
+            spec=spec,
         )
-        hidden_states = outputs.hidden_states
-        if hidden_states is None:
-            raise RuntimeError("Model did not return hidden_states.")
-        if spec.layer >= len(hidden_states):
-            raise RuntimeError(f"Model returned {len(hidden_states)} hidden states; cannot read {spec.hook_point}.")
-        acts = torch.relu(sae.encode(hidden_states[spec.layer][0])).to(torch.float32)
+        acts = torch.relu(sae.encode(hidden)).to(torch.float32)
         values, indices = torch.topk(acts, k=min(body.top_k, sae.d_sae), dim=-1)
 
     token_ids = input_ids[0].detach().cpu().tolist()
@@ -408,6 +413,42 @@ def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: L
         "truncated": bool(truncated),
         "n_components": int(sae.d_sae),
     }
+
+
+def local_hidden_activations(*, model: Any, input_ids: Any, attention_mask: Any, spec: LocalSAESpec) -> Any:
+    if spec.hidden_location == "resid_pre":
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            use_cache=False,
+        )
+        hidden_states = outputs.hidden_states
+        if hidden_states is None:
+            raise RuntimeError("Model did not return hidden_states.")
+        if spec.layer >= len(hidden_states):
+            raise RuntimeError(f"Model returned {len(hidden_states)} hidden states; cannot read {spec.hook_point}.")
+        return hidden_states[spec.layer][0]
+
+    captured: dict[str, Any] = {}
+
+    def capture_resid_post(_module: Any, _inputs: Any, output: Any) -> None:
+        captured["hidden"] = output[0] if isinstance(output, tuple) else output
+
+    handle = model.transformer.h[spec.layer].register_forward_hook(capture_resid_post)
+    try:
+        model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=False,
+            use_cache=False,
+        )
+    finally:
+        handle.remove()
+    hidden = captured.get("hidden")
+    if hidden is None:
+        raise RuntimeError(f"Could not capture {spec.hook_point}.")
+    return hidden[0]
 
 
 def decode_token_text(tokenizer: Any, token_id: int) -> str:
