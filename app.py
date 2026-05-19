@@ -102,12 +102,14 @@ def create_app() -> FastAPI:
         cache_key = probe_cache_key(request_payload)
         cached_payload = cache_get(app.state.cache_db_path, cache_key)
         if cached_payload:
-            return {**cached_payload, "cached": True}
+            return {**hydrate_feature_annotations(app.state.cache_db_path, cached_payload), "cached": True}
         try:
             payload = post_json(f"{NEURONPEDIA_URL}/api/search-topk-by-token", request_payload)
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         normalized_payload = normalize_probe_payload(payload, model_id=body.model_id, source=body.source, top_k=body.top_k)
+        cache_feature_annotations(app.state.cache_db_path, normalized_payload, ttl_seconds=CACHE_TTL_SECONDS)
+        normalized_payload = hydrate_feature_annotations(app.state.cache_db_path, normalized_payload)
         cache_set(app.state.cache_db_path, cache_key, normalized_payload, ttl_seconds=CACHE_TTL_SECONDS)
         return normalized_payload
 
@@ -132,6 +134,23 @@ def init_cache_db(path: Path) -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_entries_expires_at ON cache_entries(expires_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feature_annotations (
+                model_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                component INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                density_json TEXT,
+                source_url TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (model_id, source, component)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_feature_annotations_expires_at ON feature_annotations(expires_at)")
 
 
 def cache_get(path: Path, key: str, *, allow_expired: bool = False) -> dict[str, Any] | None:
@@ -169,6 +188,135 @@ def cache_set(path: Path, key: str, value: dict[str, Any], *, ttl_seconds: int) 
 def probe_cache_key(payload: dict[str, Any]) -> str:
     blob = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return f"probe:v1:{hashlib.sha256(blob).hexdigest()}"
+
+
+def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_seconds: int) -> None:
+    model_id = str(probe_payload.get("model_name") or "")
+    source = str(probe_payload.get("source") or probe_payload.get("layer") or "")
+    if not model_id or not source:
+        return
+
+    annotations: dict[int, tuple[str, Any, str]] = {}
+    for token in probe_payload.get("tokens") or []:
+        if not isinstance(token, dict):
+            continue
+        for feature in token.get("top") or []:
+            if not isinstance(feature, dict):
+                continue
+            try:
+                component = int(feature.get("component", -1))
+            except (TypeError, ValueError):
+                continue
+            label = str(feature.get("label") or "").strip()
+            if component < 0 or not label:
+                continue
+            annotations[component] = (label, feature.get("density"), str(feature.get("source_url") or ""))
+
+    if not annotations:
+        return
+
+    now = int(time.time())
+    rows = [
+        (
+            model_id,
+            source,
+            component,
+            label,
+            json.dumps(density, separators=(",", ":"), sort_keys=True) if density is not None else None,
+            source_url,
+            now,
+            now,
+            now + ttl_seconds,
+        )
+        for component, (label, density, source_url) in annotations.items()
+    ]
+    with sqlite3.connect(path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO feature_annotations (
+                model_id, source, component, label, density_json, source_url, created_at, updated_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(model_id, source, component) DO UPDATE SET
+                label = excluded.label,
+                density_json = excluded.density_json,
+                source_url = excluded.source_url,
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at
+            """,
+            rows,
+        )
+
+
+def hydrate_feature_annotations(path: Path, probe_payload: dict[str, Any]) -> dict[str, Any]:
+    model_id = str(probe_payload.get("model_name") or "")
+    source = str(probe_payload.get("source") or probe_payload.get("layer") or "")
+    if not model_id or not source:
+        return probe_payload
+
+    component_set: set[int] = set()
+    for token in probe_payload.get("tokens") or []:
+        if not isinstance(token, dict):
+            continue
+        for feature in token.get("top") or []:
+            if not isinstance(feature, dict):
+                continue
+            try:
+                component = int(feature.get("component", -1))
+            except (TypeError, ValueError):
+                continue
+            if component >= 0:
+                component_set.add(component)
+    components = sorted(component_set)
+    if not components:
+        return probe_payload
+
+    now = int(time.time())
+    placeholders = ",".join("?" for _ in components)
+    params: list[Any] = [model_id, source, now, *components]
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT component, label, density_json, source_url
+            FROM feature_annotations
+            WHERE model_id = ? AND source = ? AND expires_at >= ? AND component IN ({placeholders})
+            """,
+            params,
+        ).fetchall()
+
+    annotations: dict[int, dict[str, Any]] = {}
+    for component, label, density_json, source_url in rows:
+        density = None
+        if density_json is not None:
+            try:
+                density = json.loads(str(density_json))
+            except json.JSONDecodeError:
+                density = None
+        annotations[int(component)] = {"label": str(label), "density": density, "source_url": str(source_url)}
+
+    if not annotations:
+        return probe_payload
+
+    for token in probe_payload.get("tokens") or []:
+        if not isinstance(token, dict):
+            continue
+        for feature in token.get("top") or []:
+            if not isinstance(feature, dict):
+                continue
+            try:
+                component = int(feature.get("component", -1))
+            except (TypeError, ValueError):
+                continue
+            cached = annotations.get(component)
+            if not cached:
+                continue
+            if not str(feature.get("label") or "").strip():
+                feature["label"] = cached["label"]
+            if feature.get("density") is None:
+                feature["density"] = cached["density"]
+            if not feature.get("source_url"):
+                feature["source_url"] = cached["source_url"]
+    return probe_payload
 
 
 def fetch_text(url: str) -> str:
