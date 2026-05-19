@@ -31,7 +31,7 @@ DATA_DIR = ROOT / "data"
 CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
 CACHE_TTL_SECONDS = 24 * 60 * 60
-CATALOG_CACHE_KEY = "catalog:v1"
+CATALOG_CACHE_KEY = "catalog:v2"
 
 
 @dataclass(frozen=True)
@@ -712,6 +712,7 @@ def build_catalog(resources_html: str) -> dict[str, Any]:
                         "category": source_category(source.source_id),
                         "category_label": format_category_label(source_category(source.source_id)),
                         "has_annotation": True,
+                        "local_inference_enabled": local_sae_spec(model_id, source.source_id) is not None,
                         "inference_enabled": source.inference_enabled,
                         "url": f"{NEURONPEDIA_URL}/{urllib.parse.quote(model_id)}/{urllib.parse.quote(source.source_id)}",
                     }
@@ -725,7 +726,7 @@ def build_catalog(resources_html: str) -> dict[str, Any]:
         "model_count": len(models),
         "source_count": sum(model["source_count"] for model in models),
         "inference_source_count": sum(model["inference_source_count"] for model in models),
-        "annotation_marker": "*",
+        "local_inference_marker": "◆",
         "fetched_at": int(time.time()),
     }
 

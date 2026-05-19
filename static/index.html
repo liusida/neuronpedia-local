@@ -170,12 +170,12 @@
       const groups = groupedSources(sources);
       const localMode = els.activationMode.value === "local";
       els.layerSelect.innerHTML = groups.map(group => {
-        const runnableCount = localMode ? group.sources.length : group.sources.filter(source => source.inference_enabled).length;
-        const groupLabel = `${group.label} · ${group.sources.length} layers · ${runnableCount} ${localMode ? "selectable" : "runnable"}`;
+        const runnableCount = localMode ? group.sources.filter(source => source.local_inference_enabled).length : group.sources.filter(source => source.inference_enabled).length;
+        const groupLabel = `${group.label} · ${group.sources.length} layers · ${runnableCount} ${localMode ? "local" : "runnable"}`;
         const options = group.sources.map(source => {
-          const marker = source.has_annotation ? "* " : "";
+          const local = source.local_inference_enabled ? "◆ " : "";
           const runnable = source.inference_enabled || localMode ? "" : " · no NP inference";
-          const label = `${marker}${source.layer_label || source.id}${runnable}`;
+          const label = `${local}${source.layer_label || source.id}${runnable}`;
           return `<option value="${escapeAttr(source.id)}" ${source.inference_enabled || localMode ? "" : "disabled"}>${escapeHtml(label)}</option>`;
         }).join("");
         return `<optgroup label="${escapeAttr(groupLabel)}">${options}</optgroup>`;
@@ -380,7 +380,8 @@
     function modelStatusText(model, meta = null) {
       if (!model) return "";
       const stale = meta?.stale ? " · using cached catalog" : "";
-      return `${model.id} · ${model.annotated_source_count || 0} annotated sources (*) · ${model.inference_source_count || 0} runnable${stale}`;
+      const localCount = (model.sources || []).filter(source => source.local_inference_enabled).length;
+      return `${model.id} · ${model.annotated_source_count || 0} annotated sources · ${localCount} local · ${model.inference_source_count || 0} runnable${stale}`;
     }
 
     async function api(path, options = {}) {
