@@ -28,8 +28,7 @@ STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
 CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
-CATALOG_TTL_SECONDS = 60 * 60
-PROBE_TTL_SECONDS = 7 * 24 * 60 * 60
+CACHE_TTL_SECONDS = 24 * 60 * 60
 CATALOG_CACHE_KEY = "catalog:v1"
 
 
@@ -68,7 +67,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/neuronpedia/catalog")
     def neuronpedia_catalog(refresh: bool = False) -> dict[str, Any]:
-        if not refresh and app.state.catalog_cache and time.time() - app.state.catalog_cache_time < CATALOG_TTL_SECONDS:
+        if not refresh and app.state.catalog_cache and time.time() - app.state.catalog_cache_time < CACHE_TTL_SECONDS:
             return app.state.catalog_cache
         if not refresh:
             cached_payload = cache_get(app.state.cache_db_path, CATALOG_CACHE_KEY)
@@ -87,7 +86,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         app.state.catalog_cache = payload
         app.state.catalog_cache_time = time.time()
-        cache_set(app.state.cache_db_path, CATALOG_CACHE_KEY, payload, ttl_seconds=CATALOG_TTL_SECONDS)
+        cache_set(app.state.cache_db_path, CATALOG_CACHE_KEY, payload, ttl_seconds=CACHE_TTL_SECONDS)
         return payload
 
     @app.post("/api/neuronpedia/probe")
@@ -109,7 +108,7 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         normalized_payload = normalize_probe_payload(payload, model_id=body.model_id, source=body.source, top_k=body.top_k)
-        cache_set(app.state.cache_db_path, cache_key, normalized_payload, ttl_seconds=PROBE_TTL_SECONDS)
+        cache_set(app.state.cache_db_path, cache_key, normalized_payload, ttl_seconds=CACHE_TTL_SECONDS)
         return normalized_payload
 
     @app.get("/")
