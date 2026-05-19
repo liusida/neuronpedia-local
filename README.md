@@ -31,4 +31,6 @@ Open <http://127.0.0.1:8000>.
 
 ## Reference
 
+- Blog post: [Inspecting LLM Internals with Public SAE Models and Neuronpedia Annotations](https://liusida.com/post.html?slug=inspecting-llm-internals-with-public-sae-models-and-neuronpedia-annotations)
+
 The official Neuronpedia repo is vendored as a git submodule under `vendor/neuronpedia`.
