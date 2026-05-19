@@ -17,6 +17,6 @@ Models and layers/sources come from Neuronpedia's public resources list. A `*` i
 
 ## Notes
 
-- The model/source catalog is cached in memory for one hour.
-- Probe requests are proxied to `https://www.neuronpedia.org/api/search-topk-by-token`.
+- The model/source catalog is cached in memory for one hour and persisted in `data/cache.sqlite`.
+- Probe requests are proxied to `https://www.neuronpedia.org/api/search-topk-by-token` and cached in SQLite for seven days by model, source, prompt, and probe settings.
 - No local model or SAE checkpoint download is needed.

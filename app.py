@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import re
+import sqlite3
 import subprocess
 import time
 import urllib.error
@@ -23,8 +25,12 @@ from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
+DATA_DIR = ROOT / "data"
+CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
 CATALOG_TTL_SECONDS = 60 * 60
+PROBE_TTL_SECONDS = 7 * 24 * 60 * 60
+CATALOG_CACHE_KEY = "catalog:v1"
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,8 @@ def create_app() -> FastAPI:
     )
     app.state.catalog_cache = None
     app.state.catalog_cache_time = 0.0
+    app.state.cache_db_path = CACHE_DB_PATH
+    init_cache_db(app.state.cache_db_path)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -62,39 +70,106 @@ def create_app() -> FastAPI:
     def neuronpedia_catalog(refresh: bool = False) -> dict[str, Any]:
         if not refresh and app.state.catalog_cache and time.time() - app.state.catalog_cache_time < CATALOG_TTL_SECONDS:
             return app.state.catalog_cache
+        if not refresh:
+            cached_payload = cache_get(app.state.cache_db_path, CATALOG_CACHE_KEY)
+            if cached_payload:
+                app.state.catalog_cache = cached_payload
+                app.state.catalog_cache_time = time.time()
+                return cached_payload
         try:
             payload = build_catalog(fetch_text(f"{NEURONPEDIA_URL}/available-resources"))
         except RuntimeError as exc:
             if app.state.catalog_cache:
                 return {**app.state.catalog_cache, "stale": True, "warning": str(exc)}
+            stale_payload = cache_get(app.state.cache_db_path, CATALOG_CACHE_KEY, allow_expired=True)
+            if stale_payload:
+                return {**stale_payload, "stale": True, "warning": str(exc)}
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         app.state.catalog_cache = payload
         app.state.catalog_cache_time = time.time()
+        cache_set(app.state.cache_db_path, CATALOG_CACHE_KEY, payload, ttl_seconds=CATALOG_TTL_SECONDS)
         return payload
 
     @app.post("/api/neuronpedia/probe")
     def neuronpedia_probe(body: ProbeRequest) -> dict[str, Any]:
+        request_payload = {
+            "modelId": body.model_id,
+            "source": body.source,
+            "text": body.text,
+            "numResults": body.top_k,
+            "ignoreBos": body.ignore_bos,
+            "densityThreshold": body.density_threshold,
+        }
+        cache_key = probe_cache_key(request_payload)
+        cached_payload = cache_get(app.state.cache_db_path, cache_key)
+        if cached_payload:
+            return {**cached_payload, "cached": True}
         try:
-            payload = post_json(
-                f"{NEURONPEDIA_URL}/api/search-topk-by-token",
-                {
-                    "modelId": body.model_id,
-                    "source": body.source,
-                    "text": body.text,
-                    "numResults": body.top_k,
-                    "ignoreBos": body.ignore_bos,
-                    "densityThreshold": body.density_threshold,
-                },
-            )
+            payload = post_json(f"{NEURONPEDIA_URL}/api/search-topk-by-token", request_payload)
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return normalize_probe_payload(payload, model_id=body.model_id, source=body.source, top_k=body.top_k)
+        normalized_payload = normalize_probe_payload(payload, model_id=body.model_id, source=body.source, top_k=body.top_k)
+        cache_set(app.state.cache_db_path, cache_key, normalized_payload, ttl_seconds=PROBE_TTL_SECONDS)
+        return normalized_payload
 
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
     return app
+
+
+def init_cache_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cache_entries (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_entries_expires_at ON cache_entries(expires_at)")
+
+
+def cache_get(path: Path, key: str, *, allow_expired: bool = False) -> dict[str, Any] | None:
+    now = int(time.time())
+    with sqlite3.connect(path) as conn:
+        row = conn.execute(
+            "SELECT value_json, expires_at FROM cache_entries WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        value_json, expires_at = row
+        if int(expires_at) < now and not allow_expired:
+            conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+            return None
+    try:
+        value = json.loads(str(value_json))
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def cache_set(path: Path, key: str, value: dict[str, Any], *, ttl_seconds: int) -> None:
+    now = int(time.time())
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO cache_entries (key, value_json, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (key, json.dumps(value, separators=(",", ":"), sort_keys=True), now, now + ttl_seconds),
+        )
+
+
+def probe_cache_key(payload: dict[str, Any]) -> str:
+    blob = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return f"probe:v1:{hashlib.sha256(blob).hexdigest()}"
 
 
 def fetch_text(url: str) -> str:
