@@ -155,14 +155,36 @@
 
     function renderLayerSelect() {
       const model = selectedModel();
-      els.layerSelect.innerHTML = (model?.sources || []).map(source => {
-        const marker = source.has_annotation ? "* " : "";
-        const runnable = source.inference_enabled ? "" : " · no inference";
-        const label = `${marker}${source.label || source.id}${runnable}`;
-        return `<option value="${escapeAttr(source.id)}" ${source.inference_enabled ? "" : "disabled"}>${escapeHtml(label)}</option>`;
+      const sources = model?.sources || [];
+      const groups = groupedSources(sources);
+      els.layerSelect.innerHTML = groups.map(group => {
+        const runnableCount = group.sources.filter(source => source.inference_enabled).length;
+        const groupLabel = `${group.label} · ${group.sources.length} layers · ${runnableCount} runnable`;
+        const options = group.sources.map(source => {
+          const marker = source.has_annotation ? "* " : "";
+          const runnable = source.inference_enabled ? "" : " · no inference";
+          const label = `${marker}${source.layer_label || source.id}${runnable}`;
+          return `<option value="${escapeAttr(source.id)}" ${source.inference_enabled ? "" : "disabled"}>${escapeHtml(label)}</option>`;
+        }).join("");
+        return `<optgroup label="${escapeAttr(groupLabel)}">${options}</optgroup>`;
       }).join("");
       const firstRunnable = [...els.layerSelect.options].find(option => !option.disabled);
       if (firstRunnable) els.layerSelect.value = firstRunnable.value;
+    }
+
+    function groupedSources(sources) {
+      const out = [];
+      const byCategory = new Map();
+      sources.forEach(source => {
+        const key = source.category || source.id;
+        if (!byCategory.has(key)) {
+          const group = { key, label: source.category_label || key, sources: [] };
+          byCategory.set(key, group);
+          out.push(group);
+        }
+        byCategory.get(key).sources.push(source);
+      });
+      return out;
     }
 
     function selectedModel() {

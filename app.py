@@ -154,6 +154,10 @@ def build_catalog(resources_html: str) -> dict[str, Any]:
         sources = sorted(by_model[model_id], key=lambda row: source_sort_key(row.source_id))
         annotated_count = len(sources)
         inference_count = sum(1 for source in sources if source.inference_enabled)
+        categories = sorted(
+            {source_category(source.source_id) for source in sources},
+            key=source_category_sort_key,
+        )
         models.append(
             {
                 "id": model_id,
@@ -161,10 +165,24 @@ def build_catalog(resources_html: str) -> dict[str, Any]:
                 "source_count": len(sources),
                 "annotated_source_count": annotated_count,
                 "inference_source_count": inference_count,
+                "categories": [
+                    {
+                        "id": category,
+                        "label": format_category_label(category),
+                        "source_count": sum(1 for source in sources if source_category(source.source_id) == category),
+                        "inference_source_count": sum(
+                            1 for source in sources if source_category(source.source_id) == category and source.inference_enabled
+                        ),
+                    }
+                    for category in categories
+                ],
                 "sources": [
                     {
                         "id": source.source_id,
                         "label": format_source_label(source.source_id),
+                        "layer_label": format_layer_label(source.source_id),
+                        "category": source_category(source.source_id),
+                        "category_label": format_category_label(source_category(source.source_id)),
                         "has_annotation": True,
                         "inference_enabled": source.inference_enabled,
                         "url": f"{NEURONPEDIA_URL}/{urllib.parse.quote(model_id)}/{urllib.parse.quote(source.source_id)}",
@@ -288,13 +306,54 @@ def format_source_label(source_id: str) -> str:
     return source_id.replace("_", " ")
 
 
-def source_sort_key(source_id: str) -> tuple[int, int, str]:
-    match = re.match(r"^(\d+)", source_id)
-    if match:
-        return (0, int(match.group(1)), source_id)
+def format_layer_label(source_id: str) -> str:
     if source_id.startswith("e-"):
-        return (0, -1, source_id)
-    return (1, 0, source_id)
+        return "embedding"
+    layer = source_layer(source_id)
+    return f"layer {layer}" if layer is not None else source_id
+
+
+def source_category(source_id: str) -> str:
+    if re.match(r"^\d+$", source_id):
+        return "default"
+    match = re.match(r"^(?:\d+|e)-(.+)$", source_id)
+    return match.group(1) if match else source_id
+
+
+def format_category_label(category: str) -> str:
+    return category.replace("_", " ")
+
+
+def source_layer(source_id: str) -> int | None:
+    match = re.match(r"^(\d+)", source_id)
+    return int(match.group(1)) if match else None
+
+
+def source_category_sort_key(category: str) -> tuple[int, str]:
+    preferred_order = {
+        "res-jb": 0,
+        "resid": 1,
+        "res": 2,
+        "res_post": 3,
+        "res_mid": 4,
+        "mlp": 10,
+        "att": 20,
+        "gemmascope-res-16k": 30,
+        "gemmascope-mlp-16k": 31,
+        "gemmascope-att-16k": 32,
+        "default": 1000,
+    }
+    return (preferred_order.get(category, 100), category)
+
+
+def source_sort_key(source_id: str) -> tuple[int, str, int, str]:
+    category = source_category(source_id)
+    layer = source_layer(source_id)
+    if layer is not None:
+        return (*source_category_sort_key(category), layer, source_id)
+    if source_id.startswith("e-"):
+        return (*source_category_sort_key(category), -1, source_id)
+    return (*source_category_sort_key(category), 0, source_id)
 
 
 app = create_app()
