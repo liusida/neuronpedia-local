@@ -38,7 +38,7 @@
     .prompt-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
     .filters { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
     #tokenFilter { width: 11rem; }
-    #cardWidth { width: 7rem; }
+    #cardWidth, #fadeThreshold { width: 7rem; }
     .toggle { min-height: 39px; display: flex; align-items: center; justify-content: center; }
     .toggle input { width: 16px; height: 16px; margin: 0; }
     .status { color: var(--muted); min-height: 21px; }
@@ -100,6 +100,7 @@
         <div id="status" class="status">Loading Neuronpedia models...</div>
         <div class="filters">
           <label>Card width<input id="cardWidth" type="range" min="118" max="260" step="2" value="128" /></label>
+          <label>Fade below <span id="fadeThresholdValue">67%</span><input id="fadeThreshold" type="range" min="0" max="100" step="1" value="67" /></label>
           <label>Token filter<input id="tokenFilter" type="search" placeholder="bank" /></label>
           <label class="toggle" title="Exact token match"><input id="exactMatch" type="checkbox" aria-label="Exact token match" /></label>
         </div>
@@ -122,6 +123,8 @@
       promptText: document.getElementById("promptText"),
       status: document.getElementById("status"),
       cardWidth: document.getElementById("cardWidth"),
+      fadeThreshold: document.getElementById("fadeThreshold"),
+      fadeThresholdValue: document.getElementById("fadeThresholdValue"),
       tokenFilter: document.getElementById("tokenFilter"),
       exactMatch: document.getElementById("exactMatch"),
       chips: document.getElementById("chips"),
@@ -255,6 +258,7 @@
         const filterText = normalizeFilterText(displayToken);
         const scores = (token.top || []).map(feature => Math.abs(Number(feature.score || 0)));
         const tokenMaxScore = scores.length ? Math.max(...scores) : 0;
+        const fadeThreshold = currentFadeThreshold();
         const rows = (token.top || []).map(feature => {
           const component = Number(feature.component);
           const score = Math.abs(Number(feature.score || 0));
@@ -266,7 +270,7 @@
             ? `<span class="badge-text">${escapeHtml(label)}</span>`
             : `<span class="badge-id">${component}</span>`;
           const dot = label ? `<span class="dot" aria-hidden="true"></span>` : "";
-          const opacity = tokenMaxScore > 0 && score < tokenMaxScore * 2 / 3 ? 0.24 : 1;
+          const opacity = tokenMaxScore > 0 && score < tokenMaxScore * fadeThreshold ? 0.24 : 1;
           const hot = selectedFeatures.has(String(component)) ? "hot" : "";
           return `<button class="badge ${hot}" data-component="${component}" aria-pressed="${hot ? "true" : "false"}" title="${escapeAttr(title)}" style="--score-width:${width.toFixed(1)}%;--feature-color:${featureColor(component)};opacity:${opacity}"><span class="badge-main">${dot}${main}</span><span class="score">${formatScore(feature.score)}</span></button>`;
         }).join("");
@@ -338,6 +342,15 @@
       els.results.style.setProperty("--card-min-width", `${width}px`);
     }
 
+    function currentFadeThreshold() {
+      return Math.max(0, Math.min(Number(els.fadeThreshold.value || 67), 100)) / 100;
+    }
+
+    function applyFadeThreshold() {
+      els.fadeThresholdValue.textContent = `${Math.round(currentFadeThreshold() * 100)}%`;
+      if (state.currentResult) renderResult(state.currentResult);
+    }
+
     function modelStatusText(model, meta = null) {
       if (!model) return "";
       const stale = meta?.stale ? " · using cached catalog" : "";
@@ -387,6 +400,7 @@
     els.tokenFilter.addEventListener("input", applyTokenFilter);
     els.exactMatch.addEventListener("change", applyTokenFilter);
     els.cardWidth.addEventListener("input", applyCardWidth);
+    els.fadeThreshold.addEventListener("input", applyFadeThreshold);
     init().catch(error => {
       setStatus(`Startup error: ${error.message || error}`);
       els.results.innerHTML = `<div class="error">${escapeHtml(error.message || error)}</div>`;
