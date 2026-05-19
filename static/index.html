@@ -21,10 +21,10 @@
     body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     header { position: sticky; top: 0; z-index: 4; background: rgb(255 255 255 / .96); border-bottom: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(8px); }
     .header-inner { max-width: 1260px; margin: 0 auto; padding: 14px 18px; }
-    .top { display: flex; gap: 16px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+    .top { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
-    .tagline { color: var(--muted); font-size: 13px; }
-    .controls { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(250px, 1.2fr) minmax(220px, .9fr) 120px auto; gap: 10px; align-items: end; margin-top: 12px; }
+    .mode-select { width: min(360px, 100%); }
+    .controls { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(250px, 1.2fr) 120px auto; gap: 10px; align-items: end; margin-top: 12px; }
     label { display: grid; gap: 4px; color: #475569; font-size: 12px; font-weight: 700; }
     select, input, textarea, button { font: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #fff; color: var(--text); }
     textarea { width: 100%; min-height: 132px; resize: vertical; }
@@ -84,15 +84,14 @@
     <div class="header-inner">
       <div class="top">
         <h1>Neuronpedia Local SAE Prompt Explorer</h1>
-        <span class="tagline">Unofficial local prompt explorer for SAE activations, using Neuronpedia annotations.</span>
+        <select id="activationMode" class="mode-select" aria-label="Activation mode">
+          <option value="local" selected>Local activations + Neuronpedia annotations</option>
+          <option value="neuronpedia">Neuronpedia activations + annotations</option>
+        </select>
       </div>
       <div class="controls">
         <label>Neuronpedia model<select id="modelSelect"></select></label>
         <label>Layer / source<select id="layerSelect"></select></label>
-        <label>Run mode<select id="activationMode">
-          <option value="neuronpedia">Neuronpedia activations + annotations</option>
-          <option value="local">Local activations + Neuronpedia annotations</option>
-        </select></label>
         <label>Top features/token<input id="topK" type="number" min="1" max="20" value="5" /></label>
         <button id="runButton" class="primary">Probe</button>
       </div>
@@ -190,7 +189,7 @@
       if (!localOption) return;
       localOption.textContent = state.config.local_activation_available
         ? "Local activations + Neuronpedia annotations"
-        : "Local activations + Neuronpedia annotations (not installed)";
+        : "Local activations + Neuronpedia annotations";
     }
 
     function groupedSources(sources) {
