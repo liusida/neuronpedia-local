@@ -188,9 +188,9 @@
     function renderActivationMode() {
       const localOption = [...els.activationMode.options].find(option => option.value === "local");
       if (!localOption) return;
-      localOption.textContent = state.config.local_topk_available
+      localOption.textContent = state.config.local_activation_available
         ? "Local activations + Neuronpedia annotations"
-        : "Local activations + Neuronpedia annotations (set env)";
+        : "Local activations + Neuronpedia annotations (not installed)";
     }
 
     function groupedSources(sources) {
@@ -439,8 +439,8 @@
     els.runButton.addEventListener("click", runProbe);
     els.activationMode.addEventListener("change", () => {
       renderLayerSelect();
-      setStatus(els.activationMode.value === "local" && !state.config.local_topk_available
-        ? `Local mode needs ${state.config.local_topk_env || "NEURONPEDIA_LOCAL_TOPK_URL"} before probing.`
+      setStatus(els.activationMode.value === "local" && !state.config.local_activation_available
+        ? "Local activation mode is wired into this server, but the local LLM+SAE runner is not installed yet."
         : modelStatusText(selectedModel()));
     });
     els.tokenFilter.addEventListener("input", applyTokenFilter);

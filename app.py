@@ -6,7 +6,6 @@ from __future__ import annotations
 import html
 import hashlib
 import json
-import os
 import re
 import sqlite3
 import subprocess
@@ -29,7 +28,6 @@ STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
 CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
-LOCAL_TOPK_URL = os.environ.get("NEURONPEDIA_LOCAL_TOPK_URL", "").strip()
 CACHE_TTL_SECONDS = 24 * 60 * 60
 CATALOG_CACHE_KEY = "catalog:v1"
 
@@ -66,14 +64,13 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"status": "ok", "local_topk_available": bool(LOCAL_TOPK_URL)}
+        return {"status": "ok", "local_activation_available": local_activation_available()}
 
     @app.get("/api/config")
     def config() -> dict[str, Any]:
         return {
             "cache_ttl_seconds": CACHE_TTL_SECONDS,
-            "local_topk_available": bool(LOCAL_TOPK_URL),
-            "local_topk_env": "NEURONPEDIA_LOCAL_TOPK_URL",
+            "local_activation_available": local_activation_available(),
         }
 
     @app.get("/api/neuronpedia/catalog")
@@ -102,11 +99,6 @@ def create_app() -> FastAPI:
 
     @app.post("/api/neuronpedia/probe")
     def neuronpedia_probe(body: ProbeRequest) -> dict[str, Any]:
-        if body.activation_mode == "local" and not LOCAL_TOPK_URL:
-            raise HTTPException(
-                status_code=503,
-                detail="Local LLM+SAE mode needs NEURONPEDIA_LOCAL_TOPK_URL to point at a local top-k activation endpoint.",
-            )
         request_payload = {
             "activationMode": body.activation_mode,
             "modelId": body.model_id,
@@ -122,7 +114,7 @@ def create_app() -> FastAPI:
             return {**hydrate_feature_annotations(app.state.cache_db_path, cached_payload), "cached": True}
         try:
             if body.activation_mode == "local":
-                payload = call_local_topk(body)
+                payload = run_local_topk(body)
             else:
                 payload = post_json(
                     f"{NEURONPEDIA_URL}/api/search-topk-by-token",
@@ -224,20 +216,15 @@ def probe_cache_key(payload: dict[str, Any]) -> str:
     return f"probe:v1:{hashlib.sha256(blob).hexdigest()}"
 
 
-def call_local_topk(body: ProbeRequest) -> dict[str, Any]:
-    payload = {
-        "modelId": body.model_id,
-        "model": body.model_id,
-        "source": body.source,
-        "text": body.text,
-        "prompt": body.text,
-        "numResults": body.top_k,
-        "topK": body.top_k,
-        "top_k": body.top_k,
-        "ignoreBos": body.ignore_bos,
-        "ignore_bos": body.ignore_bos,
-    }
-    return post_json(LOCAL_TOPK_URL, payload)
+def local_activation_available() -> bool:
+    return False
+
+
+def run_local_topk(body: ProbeRequest) -> dict[str, Any]:
+    raise RuntimeError(
+        "Local LLM+SAE activation is not implemented in this build yet. "
+        f"Add a local runner for {body.model_id} / {body.source}, then this same server will use it and fetch only missing annotations from Neuronpedia."
+    )
 
 
 def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_seconds: int) -> None:
