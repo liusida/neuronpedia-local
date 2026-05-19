@@ -1,0 +1,3 @@
+[submodule "vendor/neuronpedia"]
+	path = vendor/neuronpedia
+	url = https://github.com/liusida/neuronpedia.git

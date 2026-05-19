@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neuronpedia Local SAE Prompt Explorer</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #fff;
+      --subtle: #eef2f7;
+      --text: #111827;
+      --muted: #657085;
+      --border: #cdd5e1;
+      --accent: #0f766e;
+      --accent-soft: #d9f4ef;
+      --danger: #b91c1c;
+      --shadow: 0 1px 2px rgb(17 24 39 / .08), 0 10px 28px rgb(17 24 39 / .06);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { position: sticky; top: 0; z-index: 4; background: rgb(255 255 255 / .96); border-bottom: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(8px); }
+    .header-inner { max-width: 1260px; margin: 0 auto; padding: 14px 18px; }
+    .top { display: flex; gap: 16px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+    h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    .tagline { color: var(--muted); font-size: 13px; }
+    .controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.3fr) 120px auto; gap: 10px; align-items: end; margin-top: 12px; }
+    label { display: grid; gap: 4px; color: #475569; font-size: 12px; font-weight: 700; }
+    select, input, textarea, button { font: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #fff; color: var(--text); }
+    textarea { width: 100%; min-height: 132px; resize: vertical; }
+    button { cursor: pointer; background: var(--subtle); font-weight: 700; }
+    button:hover, button.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    button.primary { background: var(--accent); border-color: #0d635d; color: #fff; min-height: 39px; }
+    button.primary:hover { background: #0d635d; color: #fff; }
+    button:disabled { opacity: .6; cursor: progress; }
+    main { max-width: 1260px; margin: 0 auto; padding: 18px; }
+    .prompt-band { display: grid; gap: 10px; }
+    .prompt-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .filters { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+    #tokenFilter { width: 11rem; }
+    #cardWidth { width: 7rem; }
+    .toggle { min-height: 39px; display: flex; align-items: center; justify-content: center; }
+    .toggle input { width: 16px; height: 16px; margin: 0; }
+    .status { color: var(--muted); min-height: 21px; }
+    .workspace { position: relative; }
+    .selection-rail { position: fixed; left: max(12px, calc((100vw - 1260px) / 2 - 100px)); top: 50vh; transform: translateY(-50%); width: 92px; z-index: 3; pointer-events: none; }
+    .chips { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 28px; }
+    .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 90px; border: 1px solid var(--feature-color, var(--accent)); border-radius: 999px; padding: 3px 8px; background: color-mix(in srgb, var(--feature-color, var(--accent)) 14%, white); font-weight: 750; pointer-events: auto; }
+    .chip a { color: inherit; text-decoration: none; }
+    .chip button { all: unset; cursor: pointer; color: var(--muted); font-weight: 900; }
+    .chip button:hover { color: var(--danger); }
+    .layer-result { margin-top: 16px; }
+    .layer-result h2 { margin: 0 0 8px; font-size: 17px; }
+    .token-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width, 128px), 1fr)); gap: 10px; margin-top: 12px; }
+    .token-card { position: relative; min-width: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 7px; box-shadow: var(--shadow); text-align: center; }
+    .token-word { min-height: 21px; font-weight: 850; word-break: break-word; }
+    .badge { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 6px; width: 100%; margin-top: 4px; padding: 4px 5px; min-height: 25px; border: 1px solid #d1d5db; border-radius: 5px; background: linear-gradient(90deg, #eef2f7 0 var(--score-width, 0%), #fff var(--score-width, 0%) 100%); font-size: 10px; cursor: pointer; }
+    .badge.hot { border-color: var(--feature-color, var(--accent)); background: linear-gradient(90deg, color-mix(in srgb, var(--feature-color, var(--accent)) 15%, white) 0 var(--score-width, 0%), #fff var(--score-width, 0%) 100%); box-shadow: inset 3px 0 0 var(--feature-color, var(--accent)); }
+    .badge-main { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
+    .badge-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; text-align: left; }
+    .badge-id { font-weight: 800; }
+    .score { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .dot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; background: #16a34a; box-shadow: 0 0 0 1px #15803d; }
+    .pos { position: absolute; right: 4px; bottom: 4px; color: #94a3b8; font-size: 9px; background: rgb(255 255 255 / .72); border: 1px solid #e2e8f0; border-radius: 4px; padding: 0 4px; }
+    .empty, .error { margin-top: 16px; padding: 18px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); background: rgb(255 255 255 / .55); }
+    .error { color: var(--danger); border-color: #fecaca; background: #fef2f2; }
+    @media (max-width: 860px) {
+      .controls { grid-template-columns: 1fr 1fr; }
+      .controls button { min-height: 39px; }
+      .selection-rail { position: sticky; top: 142px; transform: none; width: auto; padding: 8px 0; background: rgb(247 248 250 / .94); backdrop-filter: blur(8px); pointer-events: auto; }
+      .chips { flex-direction: row; flex-wrap: wrap; }
+      .chip { max-width: none; }
+    }
+    @media (max-width: 560px) {
+      .controls { grid-template-columns: 1fr; }
+      main, .header-inner { padding-left: 12px; padding-right: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="top">
+        <h1>Neuronpedia Local SAE Prompt Explorer</h1>
+        <span class="tagline">Unofficial local prompt explorer for SAE activations, using Neuronpedia annotations.</span>
+      </div>
+      <div class="controls">
+        <label>Neuronpedia model<select id="modelSelect"></select></label>
+        <label>Layer / source<select id="layerSelect"></select></label>
+        <label>Top features/token<input id="topK" type="number" min="1" max="20" value="5" /></label>
+        <button id="runButton" class="primary">Probe</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="prompt-band">
+      <label>Prompt<textarea id="promptText" placeholder="Paste a sentence or short paragraph..."></textarea></label>
+      <div class="prompt-actions">
+        <div id="status" class="status">Loading Neuronpedia models...</div>
+        <div class="filters">
+          <label>Card width<input id="cardWidth" type="range" min="118" max="260" step="2" value="128" /></label>
+          <label>Token filter<input id="tokenFilter" type="search" placeholder="bank" /></label>
+          <label class="toggle" title="Exact token match"><input id="exactMatch" type="checkbox" aria-label="Exact token match" /></label>
+        </div>
+      </div>
+    </section>
+    <section class="workspace">
+      <div class="selection-rail"><div id="chips" class="chips"></div></div>
+      <div id="results" class="empty">Enter a prompt and run the probe.</div>
+    </section>
+  </main>
+
+  <script>
+    const state = { models: [], modelId: "", currentResult: null };
+    const selectedFeatures = new Set();
+    const els = {
+      modelSelect: document.getElementById("modelSelect"),
+      layerSelect: document.getElementById("layerSelect"),
+      topK: document.getElementById("topK"),
+      runButton: document.getElementById("runButton"),
+      promptText: document.getElementById("promptText"),
+      status: document.getElementById("status"),
+      cardWidth: document.getElementById("cardWidth"),
+      tokenFilter: document.getElementById("tokenFilter"),
+      exactMatch: document.getElementById("exactMatch"),
+      chips: document.getElementById("chips"),
+      results: document.getElementById("results"),
+    };
+
+    async function init() {
+      applyCardWidth();
+      const meta = await api("/api/neuronpedia/catalog");
+      state.models = meta.models || [];
+      if (!state.models.length) {
+        setStatus("No Neuronpedia models found.");
+        els.results.innerHTML = `<div class="error">Could not load Neuronpedia's public model/source catalog.</div>`;
+        return;
+      }
+      state.modelId = preferredInitialModelId();
+      renderModelSelect();
+      renderLayerSelect();
+      setStatus(modelStatusText(selectedModel(), meta));
+    }
+
+    function renderModelSelect() {
+      els.modelSelect.innerHTML = state.models.map(model => {
+        const annotated = model.annotated_source_count || 0;
+        const inference = model.inference_source_count || 0;
+        const label = `${model.label || model.id} · ${annotated} annotated · ${inference} runnable`;
+        return `<option value="${escapeAttr(model.id)}">${escapeHtml(label)}</option>`;
+      }).join("");
+      els.modelSelect.value = state.modelId;
+    }
+
+    function renderLayerSelect() {
+      const model = selectedModel();
+      els.layerSelect.innerHTML = (model?.sources || []).map(source => {
+        const marker = source.has_annotation ? "* " : "";
+        const runnable = source.inference_enabled ? "" : " · no inference";
+        const label = `${marker}${source.label || source.id}${runnable}`;
+        return `<option value="${escapeAttr(source.id)}" ${source.inference_enabled ? "" : "disabled"}>${escapeHtml(label)}</option>`;
+      }).join("");
+      const firstRunnable = [...els.layerSelect.options].find(option => !option.disabled);
+      if (firstRunnable) els.layerSelect.value = firstRunnable.value;
+    }
+
+    function selectedModel() {
+      return state.models.find(model => model.id === state.modelId) || state.models[0] || null;
+    }
+
+    function selectedSource() {
+      const model = selectedModel();
+      return (model?.sources || []).find(source => source.id === els.layerSelect.value) || null;
+    }
+
+    function preferredInitialModelId() {
+      const withInference = state.models.find(model => (model.inference_source_count || 0) > 0);
+      return (withInference || state.models[0] || {}).id || "";
+    }
+
+    async function runProbe() {
+      const model = selectedModel();
+      if (!model) return;
+      const text = els.promptText.value.trim();
+      if (!text) {
+        setStatus("Enter text first.");
+        return;
+      }
+      const layer = els.layerSelect.value;
+      const source = selectedSource();
+      if (!source?.inference_enabled) {
+        setStatus("Choose a layer/source with inference enabled.");
+        return;
+      }
+      selectedFeatures.clear();
+      renderChips();
+      els.results.innerHTML = "";
+      els.runButton.disabled = true;
+      setStatus(`Asking Neuronpedia for ${model.id} / ${layerLabel(layer)}...`);
+      try {
+        const data = await api("/api/neuronpedia/probe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model_id: model.id,
+            source: layer,
+            text,
+            top_k: Number(els.topK.value || 5),
+          }),
+        });
+        state.currentResult = data;
+        renderResult(data);
+        const truncated = data.truncated ? " · input truncated to context window" : "";
+        setStatus(`${model.id} ${layerLabel(layer)}: ${data.seq_len} tokens · top-${data.top_k} Neuronpedia activations${truncated}`);
+      } catch (error) {
+        els.results.innerHTML = `<div class="error">${escapeHtml(error.message || error)}</div>`;
+        setStatus(`Probe error: ${error.message || error}`);
+      } finally {
+        els.runButton.disabled = false;
+      }
+    }
+
+    function renderResult(data) {
+      const logs = [];
+      (data.tokens || []).forEach(token => (token.top || []).forEach(feature => logs.push(Math.log1p(Math.abs(Number(feature.score || 0))))));
+      const min = logs.length ? Math.min(...logs) : 0;
+      const max = logs.length ? Math.max(...logs) : 1;
+      const span = Math.max(1e-9, max - min);
+      const warning = data.truncated ? `<p class="status">Input exceeded the context window; only the first ${data.seq_len} tokens are shown.</p>` : "";
+      const cards = (data.tokens || []).map(token => {
+        const displayToken = displayTokenText(token.token_text ?? token.token);
+        const filterText = normalizeFilterText(displayToken);
+        const scores = (token.top || []).map(feature => Math.abs(Number(feature.score || 0)));
+        const tokenMaxScore = scores.length ? Math.max(...scores) : 0;
+        const rows = (token.top || []).map(feature => {
+          const component = Number(feature.component);
+          const score = Math.abs(Number(feature.score || 0));
+          const log = Math.log1p(score);
+          const width = 16 + 84 * ((log - min) / span);
+          const label = String(feature.label || "").trim();
+          const title = label ? `${label} · #${component}` : `#${component}`;
+          const main = label
+            ? `<span class="badge-text">${escapeHtml(label)}</span>`
+            : `<span class="badge-id">${component}</span>`;
+          const dot = label ? `<span class="dot" aria-hidden="true"></span>` : "";
+          const opacity = tokenMaxScore > 0 && score < tokenMaxScore * 2 / 3 ? 0.24 : 1;
+          const hot = selectedFeatures.has(String(component)) ? "hot" : "";
+          return `<button class="badge ${hot}" data-component="${component}" aria-pressed="${hot ? "true" : "false"}" title="${escapeAttr(title)}" style="--score-width:${width.toFixed(1)}%;--feature-color:${featureColor(component)};opacity:${opacity}"><span class="badge-main">${dot}${main}</span><span class="score">${formatScore(feature.score)}</span></button>`;
+        }).join("");
+        return `<article class="token-card" data-token="${escapeAttr(filterText)}"><div class="token-word">${escapeHtml(displayToken)}</div>${rows}<span class="pos">${token.position}</span></article>`;
+      }).join("");
+      els.results.innerHTML = `<section class="layer-result"><h2>${escapeHtml(layerLabel(data.layer))}</h2>${warning}<div class="token-grid">${cards}</div></section>`;
+      wireFeatureButtons();
+      applyTokenFilter();
+    }
+
+    function wireFeatureButtons() {
+      els.results.querySelectorAll("[data-component]").forEach(button => {
+        button.addEventListener("click", event => {
+          const key = String(button.dataset.component);
+          if (event.ctrlKey || event.metaKey) {
+            if (selectedFeatures.has(key)) selectedFeatures.delete(key);
+            else selectedFeatures.add(key);
+          } else {
+            selectedFeatures.clear();
+            selectedFeatures.add(key);
+          }
+          paintHighlights();
+          renderChips();
+        });
+      });
+    }
+
+    function paintHighlights() {
+      els.results.querySelectorAll("[data-component]").forEach(button => {
+        const hot = selectedFeatures.has(String(button.dataset.component));
+        button.classList.toggle("hot", hot);
+        button.setAttribute("aria-pressed", hot ? "true" : "false");
+      });
+    }
+
+    function renderChips() {
+      const layer = els.layerSelect.value;
+      els.chips.innerHTML = [...selectedFeatures].sort((a, b) => Number(a) - Number(b)).map(component => {
+        const href = neuronpediaFeatureHref(layer, component);
+        const label = `<a href="${escapeAttr(href)}" target="_blank" rel="noopener" title="Open #${escapeAttr(component)} on Neuronpedia">#${escapeHtml(component)}</a>`;
+        return `<span class="chip" style="--feature-color:${featureColor(component)}">${label}<button type="button" data-remove="${escapeAttr(component)}" aria-label="Remove #${escapeAttr(component)}">x</button></span>`;
+      }).join("");
+      els.chips.querySelectorAll("[data-remove]").forEach(button => {
+        button.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          selectedFeatures.delete(String(button.dataset.remove));
+          paintHighlights();
+          renderChips();
+        });
+      });
+    }
+
+    function neuronpediaFeatureHref(layerKey, component) {
+      return `https://www.neuronpedia.org/${encodeURIComponent(selectedModel()?.id || "")}/${encodeURIComponent(layerKey)}/${encodeURIComponent(component)}`;
+    }
+
+    function applyTokenFilter() {
+      const query = normalizeFilterText(els.tokenFilter.value);
+      const exact = els.exactMatch.checked;
+      els.results.querySelectorAll(".token-card").forEach(card => {
+        const token = card.dataset.token || "";
+        card.hidden = Boolean(query) && !(exact ? token === query : token.includes(query));
+      });
+    }
+
+    function applyCardWidth() {
+      const width = Math.max(118, Math.min(Number(els.cardWidth.value || 128), 260));
+      els.results.style.setProperty("--card-min-width", `${width}px`);
+    }
+
+    function modelStatusText(model, meta = null) {
+      if (!model) return "";
+      const stale = meta?.stale ? " · using cached catalog" : "";
+      return `${model.id} · ${model.annotated_source_count || 0} annotated sources (*) · ${model.inference_source_count || 0} runnable${stale}`;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, options);
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const payload = await response.json();
+          detail = payload.detail || detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    function setStatus(message) { els.status.textContent = message || ""; }
+    function layerLabel(layer) { return String(layer || "").replace(/^layer_/, "layer "); }
+    function displayTokenText(value) { return String(value || "").replace(/^Ġ/, " ").replace(/^▁/, " "); }
+    function normalizeFilterText(value) { return displayTokenText(value).trim().toLowerCase(); }
+    function featureColor(component) { return `hsl(${(37 * Number(component)) % 360} 70% 42%)`; }
+    function formatScore(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n)) return "";
+      const abs = Math.abs(n);
+      if (abs >= 100) return n.toFixed(0);
+      if (abs >= 10) return n.toFixed(1);
+      return n.toFixed(2);
+    }
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
+    function escapeAttr(value) { return escapeHtml(value); }
+
+    els.modelSelect.addEventListener("change", () => {
+      state.modelId = els.modelSelect.value;
+      selectedFeatures.clear();
+      renderLayerSelect();
+      renderChips();
+      els.results.innerHTML = `<div class="empty">Enter a prompt and run the probe.</div>`;
+      setStatus(modelStatusText(selectedModel()));
+    });
+    els.runButton.addEventListener("click", runProbe);
+    els.tokenFilter.addEventListener("input", applyTokenFilter);
+    els.exactMatch.addEventListener("change", applyTokenFilter);
+    els.cardWidth.addEventListener("input", applyCardWidth);
+    init().catch(error => {
+      setStatus(`Startup error: ${error.message || error}`);
+      els.results.innerHTML = `<div class="error">${escapeHtml(error.message || error)}</div>`;
+    });
+  </script>
+</body>
+</html>

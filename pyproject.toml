@@ -1,0 +1,12 @@
+[project]
+name = "neuronpedia-local"
+version = "0.1.0"
+description = "Unofficial local prompt explorer for SAE activations, using Neuronpedia annotations."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
+
+[tool.uv]
+package = false
