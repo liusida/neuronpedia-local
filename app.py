@@ -31,7 +31,7 @@ DATA_DIR = ROOT / "data"
 CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
 CACHE_TTL_SECONDS = 24 * 60 * 60
-CATALOG_CACHE_KEY = "catalog:v2"
+CATALOG_CACHE_KEY = "catalog:v3"
 
 
 @dataclass(frozen=True)
