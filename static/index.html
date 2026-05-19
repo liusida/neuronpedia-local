@@ -258,8 +258,9 @@
       const span = Math.max(1e-9, max - min);
       const warning = data.truncated ? `<p class="status">Input exceeded the context window; only the first ${data.seq_len} tokens are shown.</p>` : "";
       const cards = (data.tokens || []).map(token => {
-        const displayToken = displayTokenText(token.token_text ?? token.token);
-        const filterText = normalizeFilterText(displayToken);
+        const rawToken = token.token_text ?? token.token;
+        const displayToken = displayTokenText(rawToken);
+        const filterText = normalizeTokenFilterText(rawToken);
         const scores = (token.top || []).map(feature => Math.abs(Number(feature.score || 0)));
         const tokenMaxScore = scores.length ? Math.max(...scores) : 0;
         const fadeThreshold = currentFadeThreshold();
@@ -333,7 +334,7 @@
     }
 
     function applyTokenFilter() {
-      const query = normalizeFilterText(els.tokenFilter.value);
+      const query = normalizeUserFilterText(els.tokenFilter.value);
       const exact = els.exactMatch.checked;
       els.results.querySelectorAll(".token-card").forEach(card => {
         const token = card.dataset.token || "";
@@ -389,7 +390,8 @@
         .replaceAll("\v", "\\v")
         .replaceAll(" ", "␠");
     }
-    function normalizeFilterText(value) { return displayTokenText(value).trim().toLowerCase(); }
+    function normalizeTokenFilterText(value) { return String(value ?? "").replace(/^Ġ/, " ").replace(/^▁/, " ").trim().toLowerCase(); }
+    function normalizeUserFilterText(value) { return String(value ?? "").trim().toLowerCase(); }
     function featureColor(component) { return `hsl(${(37 * Number(component)) % 360} 70% 42%)`; }
     function formatScore(value) {
       const n = Number(value || 0);
