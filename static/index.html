@@ -36,9 +36,11 @@
     main { max-width: 1260px; margin: 0 auto; padding: 18px; }
     .prompt-band { display: grid; gap: 10px; }
     .prompt-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-    .filters { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+    .filters { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .inline-control { display: flex; grid-template-columns: none; align-items: center; gap: 7px; white-space: nowrap; }
+    .inline-control .value { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 3ch; }
     #tokenFilter { width: 11rem; }
-    #cardWidth, #fadeThreshold { width: 7rem; }
+    #cardWidth, #fadeThreshold { width: 6.5rem; }
     .toggle { min-height: 39px; display: flex; align-items: center; justify-content: center; }
     .toggle input { width: 16px; height: 16px; margin: 0; }
     .status { color: var(--muted); min-height: 21px; }
@@ -99,9 +101,9 @@
       <div class="prompt-actions">
         <div id="status" class="status">Loading Neuronpedia models...</div>
         <div class="filters">
-          <label>Card width<input id="cardWidth" type="range" min="118" max="260" step="2" value="128" /></label>
-          <label>Fade below <span id="fadeThresholdValue">67%</span><input id="fadeThreshold" type="range" min="0" max="100" step="1" value="67" /></label>
-          <label>Token filter<input id="tokenFilter" type="search" placeholder="bank" /></label>
+          <label class="inline-control">Card width<input id="cardWidth" type="range" min="118" max="260" step="2" value="128" /></label>
+          <label class="inline-control">Fade below <span id="fadeThresholdValue" class="value">67%</span><input id="fadeThreshold" type="range" min="0" max="100" step="1" value="67" /></label>
+          <label class="inline-control">Token filter<input id="tokenFilter" type="search" placeholder="bank" /></label>
           <label class="toggle" title="Exact token match"><input id="exactMatch" type="checkbox" aria-label="Exact token match" /></label>
         </div>
       </div>
