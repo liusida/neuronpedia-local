@@ -376,7 +376,19 @@
 
     function setStatus(message) { els.status.textContent = message || ""; }
     function layerLabel(layer) { return String(layer || "").replace(/^layer_/, "layer "); }
-    function displayTokenText(value) { return String(value || "").replace(/^Ġ/, " ").replace(/^▁/, " "); }
+    function displayTokenText(value) {
+      const raw = String(value ?? "").replace(/^Ġ/, " ").replace(/^▁/, " ");
+      if (raw.length === 0) return "∅";
+      if (raw.trim().length > 0) return raw;
+      return raw
+        .replaceAll("\\", "\\\\")
+        .replaceAll("\n", "\\n")
+        .replaceAll("\r", "\\r")
+        .replaceAll("\t", "\\t")
+        .replaceAll("\f", "\\f")
+        .replaceAll("\v", "\\v")
+        .replaceAll(" ", "␠");
+    }
     function normalizeFilterText(value) { return displayTokenText(value).trim().toLowerCase(); }
     function featureColor(component) { return `hsl(${(37 * Number(component)) % 360} 70% 42%)`; }
     function formatScore(value) {
