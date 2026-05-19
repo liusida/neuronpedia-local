@@ -229,7 +229,7 @@ def cache_set(path: Path, key: str, value: dict[str, Any], *, ttl_seconds: int) 
 
 def probe_cache_key(payload: dict[str, Any]) -> str:
     blob = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return f"probe:v1:{hashlib.sha256(blob).hexdigest()}"
+    return f"probe:v2:{hashlib.sha256(blob).hexdigest()}"
 
 
 def local_activation_available() -> bool:
@@ -360,10 +360,11 @@ class StandardSAE:
 def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: LocalSAESpec, body: ProbeRequest) -> dict[str, Any]:
     import torch
 
-    full_ids = tokenizer.encode(body.text, add_special_tokens=True)
     max_length = min(1024, getattr(model.config, "n_positions", 1024))
+    prompt = local_prompt_with_bos(tokenizer, body.text)
+    full_ids = tokenizer.encode(prompt, add_special_tokens=False)
     truncated = len(full_ids) > max_length
-    encoded = tokenizer(body.text, return_tensors="pt", truncation=True, max_length=max_length)
+    encoded = tokenizer(prompt, add_special_tokens=False, return_tensors="pt", truncation=True, max_length=max_length)
     device = next(model.parameters()).device
     input_ids = encoded["input_ids"].to(device)
     attention_mask = encoded.get("attention_mask")
@@ -383,8 +384,10 @@ def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: L
     token_ids = input_ids[0].detach().cpu().tolist()
     values_cpu = values.detach().cpu().tolist()
     indices_cpu = indices.detach().cpu().tolist()
+    start = 1 if body.ignore_bos and token_ids and is_bos_token_id(tokenizer, token_ids[0]) else 0
     tokens = []
-    for position, token_id in enumerate(token_ids):
+    for position, token_id in enumerate(token_ids[start:]):
+        raw_position = position + start
         tokens.append(
             {
                 "position": position,
@@ -392,13 +395,13 @@ def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: L
                 "token_text": decode_token_text(tokenizer, int(token_id)),
                 "top": [
                     {
-                        "component": int(indices_cpu[position][rank]),
-                        "score": float(values_cpu[position][rank]),
+                        "component": int(indices_cpu[raw_position][rank]),
+                        "score": float(values_cpu[raw_position][rank]),
                         "label": "",
                         "density": None,
-                        "source_url": feature_url(body.model_id, body.source, int(indices_cpu[position][rank])),
+                        "source_url": feature_url(body.model_id, body.source, int(indices_cpu[raw_position][rank])),
                     }
-                    for rank in range(len(indices_cpu[position]))
+                    for rank in range(len(indices_cpu[raw_position]))
                 ],
             }
         )
@@ -413,6 +416,20 @@ def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: L
         "truncated": bool(truncated),
         "n_components": int(sae.d_sae),
     }
+
+
+def local_prompt_with_bos(tokenizer: Any, text: str) -> str:
+    bos_token = tokenizer.bos_token or tokenizer.eos_token
+    if not bos_token or text.startswith(bos_token):
+        return text
+    return bos_token + text
+
+
+def is_bos_token_id(tokenizer: Any, token_id: int) -> bool:
+    bos_token_id = tokenizer.bos_token_id
+    if bos_token_id is None:
+        bos_token_id = tokenizer.eos_token_id
+    return bos_token_id is not None and int(token_id) == int(bos_token_id)
 
 
 def local_hidden_activations(*, model: Any, input_ids: Any, attention_mask: Any, spec: LocalSAESpec) -> Any:
