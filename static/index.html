@@ -24,7 +24,7 @@
     .top { display: flex; gap: 16px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
     .tagline { color: var(--muted); font-size: 13px; }
-    .controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.3fr) 120px auto; gap: 10px; align-items: end; margin-top: 12px; }
+    .controls { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(250px, 1.2fr) minmax(220px, .9fr) 120px auto; gap: 10px; align-items: end; margin-top: 12px; }
     label { display: grid; gap: 4px; color: #475569; font-size: 12px; font-weight: 700; }
     select, input, textarea, button { font: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: #fff; color: var(--text); }
     textarea { width: 100%; min-height: 132px; resize: vertical; }
@@ -89,6 +89,10 @@
       <div class="controls">
         <label>Neuronpedia model<select id="modelSelect"></select></label>
         <label>Layer / source<select id="layerSelect"></select></label>
+        <label>Run mode<select id="activationMode">
+          <option value="neuronpedia">Neuronpedia activations + annotations</option>
+          <option value="local">Local activations + Neuronpedia annotations</option>
+        </select></label>
         <label>Top features/token<input id="topK" type="number" min="1" max="20" value="5" /></label>
         <button id="runButton" class="primary">Probe</button>
       </div>
@@ -115,11 +119,12 @@
   </main>
 
   <script>
-    const state = { models: [], modelId: "", currentResult: null };
+    const state = { models: [], modelId: "", currentResult: null, config: {} };
     const selectedFeatures = new Set();
     const els = {
       modelSelect: document.getElementById("modelSelect"),
       layerSelect: document.getElementById("layerSelect"),
+      activationMode: document.getElementById("activationMode"),
       topK: document.getElementById("topK"),
       runButton: document.getElementById("runButton"),
       promptText: document.getElementById("promptText"),
@@ -135,7 +140,8 @@
 
     async function init() {
       applyCardWidth();
-      const meta = await api("/api/neuronpedia/catalog");
+      const [meta, config] = await Promise.all([api("/api/neuronpedia/catalog"), api("/api/config")]);
+      state.config = config || {};
       state.models = meta.models || [];
       if (!state.models.length) {
         setStatus("No Neuronpedia models found.");
@@ -144,6 +150,7 @@
       }
       state.modelId = preferredInitialModelId();
       renderModelSelect();
+      renderActivationMode();
       renderLayerSelect();
       setStatus(modelStatusText(selectedModel(), meta));
     }
@@ -162,19 +169,28 @@
       const model = selectedModel();
       const sources = model?.sources || [];
       const groups = groupedSources(sources);
+      const localMode = els.activationMode.value === "local";
       els.layerSelect.innerHTML = groups.map(group => {
-        const runnableCount = group.sources.filter(source => source.inference_enabled).length;
-        const groupLabel = `${group.label} · ${group.sources.length} layers · ${runnableCount} runnable`;
+        const runnableCount = localMode ? group.sources.length : group.sources.filter(source => source.inference_enabled).length;
+        const groupLabel = `${group.label} · ${group.sources.length} layers · ${runnableCount} ${localMode ? "selectable" : "runnable"}`;
         const options = group.sources.map(source => {
           const marker = source.has_annotation ? "* " : "";
-          const runnable = source.inference_enabled ? "" : " · no inference";
+          const runnable = source.inference_enabled || localMode ? "" : " · no NP inference";
           const label = `${marker}${source.layer_label || source.id}${runnable}`;
-          return `<option value="${escapeAttr(source.id)}" ${source.inference_enabled ? "" : "disabled"}>${escapeHtml(label)}</option>`;
+          return `<option value="${escapeAttr(source.id)}" ${source.inference_enabled || localMode ? "" : "disabled"}>${escapeHtml(label)}</option>`;
         }).join("");
         return `<optgroup label="${escapeAttr(groupLabel)}">${options}</optgroup>`;
       }).join("");
       const firstRunnable = [...els.layerSelect.options].find(option => !option.disabled);
       if (firstRunnable) els.layerSelect.value = firstRunnable.value;
+    }
+
+    function renderActivationMode() {
+      const localOption = [...els.activationMode.options].find(option => option.value === "local");
+      if (!localOption) return;
+      localOption.textContent = state.config.local_topk_available
+        ? "Local activations + Neuronpedia annotations"
+        : "Local activations + Neuronpedia annotations (set env)";
     }
 
     function groupedSources(sources) {
@@ -218,7 +234,8 @@
       }
       const layer = els.layerSelect.value;
       const source = selectedSource();
-      if (!source?.inference_enabled) {
+      const localMode = els.activationMode.value === "local";
+      if (!localMode && !source?.inference_enabled) {
         setStatus("Choose a layer/source with inference enabled.");
         return;
       }
@@ -226,7 +243,9 @@
       renderChips();
       els.results.innerHTML = "";
       els.runButton.disabled = true;
-      setStatus(`Asking Neuronpedia for ${model.id} / ${layerLabel(layer)}...`);
+      setStatus(localMode
+        ? `Running local activations for ${model.id} / ${layerLabel(layer)}; fetching missing annotations...`
+        : `Asking Neuronpedia for ${model.id} / ${layerLabel(layer)}...`);
       try {
         const data = await api("/api/neuronpedia/probe", {
           method: "POST",
@@ -236,12 +255,15 @@
             source: layer,
             text,
             top_k: Number(els.topK.value || 5),
+            activation_mode: els.activationMode.value,
           }),
         });
         state.currentResult = data;
         renderResult(data);
         const truncated = data.truncated ? " · input truncated to context window" : "";
-        setStatus(`${model.id} ${layerLabel(layer)}: ${data.seq_len} tokens · top-${data.top_k} Neuronpedia activations${truncated}`);
+        const modeLabel = data.activation_mode === "local" ? "local activations" : "Neuronpedia activations";
+        const cache = data.cached ? " · cached" : "";
+        setStatus(`${model.id} ${layerLabel(layer)}: ${data.seq_len} tokens · top-${data.top_k} ${modeLabel}${cache}${truncated}`);
       } catch (error) {
         els.results.innerHTML = `<div class="error">${escapeHtml(error.message || error)}</div>`;
         setStatus(`Probe error: ${error.message || error}`);
@@ -415,6 +437,12 @@
       setStatus(modelStatusText(selectedModel()));
     });
     els.runButton.addEventListener("click", runProbe);
+    els.activationMode.addEventListener("change", () => {
+      renderLayerSelect();
+      setStatus(els.activationMode.value === "local" && !state.config.local_topk_available
+        ? `Local mode needs ${state.config.local_topk_env || "NEURONPEDIA_LOCAL_TOPK_URL"} before probing.`
+        : modelStatusText(selectedModel()));
+    });
     els.tokenFilter.addEventListener("input", applyTokenFilter);
     els.exactMatch.addEventListener("change", applyTokenFilter);
     els.cardWidth.addEventListener("input", applyCardWidth);

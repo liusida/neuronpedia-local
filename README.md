@@ -20,4 +20,5 @@ Models and layers/sources come from Neuronpedia's public resources list. A `*` i
 - The model/source catalog is cached in memory and persisted in `data/cache.sqlite` for 24 hours.
 - Probe requests are proxied to `https://www.neuronpedia.org/api/search-topk-by-token` and cached in SQLite for 24 hours by model, source, prompt, and probe settings.
 - Individual feature annotations are also cached for 24 hours by model, source, and component so labels can be reused across prompts.
+- The run mode switch supports Neuronpedia-hosted activations, or local activations with Neuronpedia used only for missing annotations. To enable local activation mode, start a local top-k endpoint and set `NEURONPEDIA_LOCAL_TOPK_URL` before launching this app. The endpoint should accept the model/source/prompt/top-k fields this app sends and return either Neuronpedia's top-k response shape or this app's normalized token/top-feature shape.
 - No local model or SAE checkpoint download is needed.

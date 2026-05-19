@@ -6,6 +6,7 @@ from __future__ import annotations
 import html
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -16,7 +17,7 @@ import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +29,7 @@ STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
 CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
+LOCAL_TOPK_URL = os.environ.get("NEURONPEDIA_LOCAL_TOPK_URL", "").strip()
 CACHE_TTL_SECONDS = 24 * 60 * 60
 CATALOG_CACHE_KEY = "catalog:v1"
 
@@ -46,6 +48,7 @@ class ProbeRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=20)
     ignore_bos: bool = True
     density_threshold: float = Field(0.9999, gt=0, lt=1)
+    activation_mode: Literal["neuronpedia", "local"] = "neuronpedia"
 
 
 def create_app() -> FastAPI:
@@ -62,8 +65,16 @@ def create_app() -> FastAPI:
     init_cache_db(app.state.cache_db_path)
 
     @app.get("/api/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health() -> dict[str, Any]:
+        return {"status": "ok", "local_topk_available": bool(LOCAL_TOPK_URL)}
+
+    @app.get("/api/config")
+    def config() -> dict[str, Any]:
+        return {
+            "cache_ttl_seconds": CACHE_TTL_SECONDS,
+            "local_topk_available": bool(LOCAL_TOPK_URL),
+            "local_topk_env": "NEURONPEDIA_LOCAL_TOPK_URL",
+        }
 
     @app.get("/api/neuronpedia/catalog")
     def neuronpedia_catalog(refresh: bool = False) -> dict[str, Any]:
@@ -91,7 +102,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/neuronpedia/probe")
     def neuronpedia_probe(body: ProbeRequest) -> dict[str, Any]:
+        if body.activation_mode == "local" and not LOCAL_TOPK_URL:
+            raise HTTPException(
+                status_code=503,
+                detail="Local LLM+SAE mode needs NEURONPEDIA_LOCAL_TOPK_URL to point at a local top-k activation endpoint.",
+            )
         request_payload = {
+            "activationMode": body.activation_mode,
             "modelId": body.model_id,
             "source": body.source,
             "text": body.text,
@@ -104,12 +121,29 @@ def create_app() -> FastAPI:
         if cached_payload:
             return {**hydrate_feature_annotations(app.state.cache_db_path, cached_payload), "cached": True}
         try:
-            payload = post_json(f"{NEURONPEDIA_URL}/api/search-topk-by-token", request_payload)
+            if body.activation_mode == "local":
+                payload = call_local_topk(body)
+            else:
+                payload = post_json(
+                    f"{NEURONPEDIA_URL}/api/search-topk-by-token",
+                    {key: value for key, value in request_payload.items() if key != "activationMode"},
+                )
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        normalized_payload = normalize_probe_payload(payload, model_id=body.model_id, source=body.source, top_k=body.top_k)
+        normalized_payload = normalize_probe_payload(
+            payload,
+            model_id=body.model_id,
+            source=body.source,
+            top_k=body.top_k,
+            activation_mode=body.activation_mode,
+        )
         cache_feature_annotations(app.state.cache_db_path, normalized_payload, ttl_seconds=CACHE_TTL_SECONDS)
-        normalized_payload = hydrate_feature_annotations(app.state.cache_db_path, normalized_payload)
+        try:
+            normalized_payload = ensure_feature_annotations(app.state.cache_db_path, normalized_payload)
+        except RuntimeError as exc:
+            if body.activation_mode == "local":
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            normalized_payload = hydrate_feature_annotations(app.state.cache_db_path, normalized_payload)
         cache_set(app.state.cache_db_path, cache_key, normalized_payload, ttl_seconds=CACHE_TTL_SECONDS)
         return normalized_payload
 
@@ -190,6 +224,22 @@ def probe_cache_key(payload: dict[str, Any]) -> str:
     return f"probe:v1:{hashlib.sha256(blob).hexdigest()}"
 
 
+def call_local_topk(body: ProbeRequest) -> dict[str, Any]:
+    payload = {
+        "modelId": body.model_id,
+        "model": body.model_id,
+        "source": body.source,
+        "text": body.text,
+        "prompt": body.text,
+        "numResults": body.top_k,
+        "topK": body.top_k,
+        "top_k": body.top_k,
+        "ignoreBos": body.ignore_bos,
+        "ignore_bos": body.ignore_bos,
+    }
+    return post_json(LOCAL_TOPK_URL, payload)
+
+
 def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_seconds: int) -> None:
     model_id = str(probe_payload.get("model_name") or "")
     source = str(probe_payload.get("source") or probe_payload.get("layer") or "")
@@ -246,6 +296,66 @@ def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_
             """,
             rows,
         )
+
+
+def cache_neuron_annotations(path: Path, model_id: str, source: str, neurons: list[Any], *, ttl_seconds: int) -> None:
+    normalized = {
+        "model_name": model_id,
+        "source": source,
+        "tokens": [
+            {
+                "top": [
+                    {
+                        "component": neuron.get("index"),
+                        "label": first_explanation_label(neuron),
+                        "density": neuron.get("frac_nonzero"),
+                        "source_url": feature_url(model_id, source, neuron.get("index")),
+                    }
+                    for neuron in neurons
+                    if isinstance(neuron, dict)
+                ]
+            }
+        ],
+    }
+    cache_feature_annotations(path, normalized, ttl_seconds=ttl_seconds)
+
+
+def ensure_feature_annotations(path: Path, probe_payload: dict[str, Any]) -> dict[str, Any]:
+    hydrated_payload = hydrate_feature_annotations(path, probe_payload)
+    model_id = str(hydrated_payload.get("model_name") or "")
+    source = str(hydrated_payload.get("source") or hydrated_payload.get("layer") or "")
+    missing = missing_annotation_components(hydrated_payload)
+    if not model_id or not source or not missing:
+        return hydrated_payload
+
+    request_payload = [
+        {"modelId": model_id, "layer": source, "index": component, "maxActsToReturn": 0}
+        for component in missing
+    ]
+    response = post_json(f"{NEURONPEDIA_URL}/api/features", request_payload)
+    if not isinstance(response, list):
+        raise RuntimeError("Neuronpedia feature annotation response was not a list.")
+    cache_neuron_annotations(path, model_id, source, response, ttl_seconds=CACHE_TTL_SECONDS)
+    return hydrate_feature_annotations(path, hydrated_payload)
+
+
+def missing_annotation_components(probe_payload: dict[str, Any]) -> list[int]:
+    missing: set[int] = set()
+    for token in probe_payload.get("tokens") or []:
+        if not isinstance(token, dict):
+            continue
+        for feature in token.get("top") or []:
+            if not isinstance(feature, dict):
+                continue
+            if str(feature.get("label") or "").strip():
+                continue
+            try:
+                component = int(feature.get("component", -1))
+            except (TypeError, ValueError):
+                continue
+            if component >= 0:
+                missing.add(component)
+    return sorted(missing)
 
 
 def hydrate_feature_annotations(path: Path, probe_payload: dict[str, Any]) -> dict[str, Any]:
@@ -331,7 +441,7 @@ def fetch_text(url: str) -> str:
             raise RuntimeError(f"Could not fetch {url}: {exc}; curl fallback failed: {curl_exc}") from exc
 
 
-def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+def post_json(url: str, payload: Any) -> Any:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -351,7 +461,7 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(f"Could not call {url}: {exc}; curl fallback failed: {curl_exc}") from exc
 
 
-def curl_text(url: str, *, payload: dict[str, Any] | None = None) -> str:
+def curl_text(url: str, *, payload: Any | None = None) -> str:
     cmd = ["curl", "-sS", "--max-time", "60", "-H", "User-Agent: neuronpedia-local/1.0"]
     if payload is not None:
         cmd.extend(["-X", "POST", "-H", "Content-Type: application/json", "--data", json.dumps(payload)])
@@ -480,30 +590,34 @@ def parse_resource_rows_with_regex(markup: str) -> list[SourceRow]:
     return rows
 
 
-def normalize_probe_payload(payload: dict[str, Any], *, model_id: str, source: str, top_k: int) -> dict[str, Any]:
+def normalize_probe_payload(
+    payload: dict[str, Any],
+    *,
+    model_id: str,
+    source: str,
+    top_k: int,
+    activation_mode: str = "neuronpedia",
+) -> dict[str, Any]:
     tokens = []
     for item in payload.get("results") or []:
         top = []
-        for feature in item.get("topFeatures") or []:
+        for feature in item.get("topFeatures") or item.get("top_features") or item.get("top") or []:
             feature_blob = feature.get("feature") or {}
-            explanations = feature_blob.get("explanations") or []
-            label = ""
-            if explanations and isinstance(explanations[0], dict):
-                label = str(explanations[0].get("description") or "").strip()
+            component = feature.get("featureIndex", feature.get("feature_index", feature.get("component", -1)))
             top.append(
                 {
-                    "component": int(feature.get("featureIndex", -1)),
-                    "score": float(feature.get("activationValue", 0)),
-                    "label": label,
+                    "component": int(component),
+                    "score": float(feature.get("activationValue", feature.get("activation_value", feature.get("score", 0)))),
+                    "label": first_explanation_label(feature_blob) or str(feature.get("label") or "").strip(),
                     "density": feature_blob.get("frac_nonzero"),
-                    "source_url": f"{NEURONPEDIA_URL}/{urllib.parse.quote(model_id)}/{urllib.parse.quote(source)}/{feature.get('featureIndex')}",
+                    "source_url": feature.get("source_url") or feature_url(model_id, source, component),
                 }
             )
         tokens.append(
             {
-                "position": int(item.get("position", item.get("tokenPosition", 0))),
+                "position": int(item.get("position", item.get("tokenPosition", item.get("token_position", 0)))),
                 "token": str(item.get("token", "")),
-                "token_text": str(item.get("token", "")),
+                "token_text": str(item.get("token_text", item.get("token", ""))),
                 "top": top,
             }
         )
@@ -512,11 +626,23 @@ def normalize_probe_payload(payload: dict[str, Any], *, model_id: str, source: s
         "layer": source,
         "source": source,
         "top_k": int(top_k),
+        "activation_mode": activation_mode,
         "tokens": tokens,
         "seq_len": len(tokens),
         "truncated": False,
         "n_components": None,
     }
+
+
+def first_explanation_label(feature_blob: dict[str, Any]) -> str:
+    explanations = feature_blob.get("explanations") or []
+    if explanations and isinstance(explanations[0], dict):
+        return str(explanations[0].get("description") or "").strip()
+    return ""
+
+
+def feature_url(model_id: str, source: str, component: Any) -> str:
+    return f"{NEURONPEDIA_URL}/{urllib.parse.quote(model_id)}/{urllib.parse.quote(source)}/{urllib.parse.quote(str(component))}"
 
 
 def format_model_label(model_id: str) -> str:
