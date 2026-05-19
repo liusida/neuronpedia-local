@@ -200,6 +200,8 @@
     }
 
     function preferredInitialModelId() {
+      const gpt2 = state.models.find(model => model.id === "gpt2-small");
+      if (gpt2) return gpt2.id;
       const withInference = state.models.find(model => (model.inference_source_count || 0) > 0);
       return (withInference || state.models[0] || {}).id || "";
     }
