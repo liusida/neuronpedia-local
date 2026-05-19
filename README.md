@@ -2,23 +2,33 @@
 
 Unofficial local prompt explorer for SAE activations, using Neuronpedia annotations.
 
-This is a standalone version of the SAE probe page from the ICA probe server. It runs a local FastAPI server, loads Neuronpedia's public model/source catalog, probes arbitrary text through Neuronpedia's inference API, and links/labels active features with Neuronpedia annotations when available.
+![Neuronpedia Local screenshot](images/screenshot.png)
 
-## Quick start
+## What It Does
+
+- Browse Neuronpedia models and SAE sources.
+- Probe a prompt token-by-token and inspect top activating SAE features.
+- Run activations locally for supported GPT-2 small `res-jb` SAEs, while fetching only missing feature annotations from Neuronpedia.
+- Or use Neuronpedia-hosted activations directly.
+- Cache catalog, probe results, and individual feature annotations in local SQLite for 24 hours.
+
+## Quick Start
 
 ```bash
 uv sync
 uv run uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Then open <http://127.0.0.1:8000>.
-
-Models and layers/sources come from Neuronpedia's public resources list. A `*` in the layer/source dropdown marks sources that have Neuronpedia annotation/dashboard data; disabled entries are present on Neuronpedia but do not currently support inference probing.
+Open <http://127.0.0.1:8000>.
 
 ## Notes
 
-- The model/source catalog is cached in memory and persisted in `data/cache.sqlite` for 24 hours.
-- Probe requests are proxied to `https://www.neuronpedia.org/api/search-topk-by-token` and cached in SQLite for 24 hours by model, source, prompt, and probe settings.
-- Individual feature annotations are also cached for 24 hours by model, source, and component so labels can be reused across prompts.
-- The run mode switch supports Neuronpedia-hosted activations, or local activations with Neuronpedia used only for missing annotations. The built-in local runner currently supports `gpt2-small` `*-res-jb` sources and downloads the matching GPT-2/SAE weights into the Hugging Face cache on first use.
-- No local model or SAE checkpoint download is needed.
+- Default mode is local activations plus Neuronpedia annotations.
+- Local activation currently supports `gpt2-small` `0-res-jb` through `12-res-jb`.
+- First local run downloads GPT-2 and SAE weights through Hugging Face.
+- `◆` in the layer/source dropdown marks sources supported by the local runner.
+- Cache lives at `data/cache.sqlite` and is ignored by git.
+
+## Reference
+
+The official Neuronpedia repo is vendored as a git submodule under `vendor/neuronpedia`.
