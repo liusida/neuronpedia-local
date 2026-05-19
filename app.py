@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import html
 import hashlib
+import importlib.util
 import json
 import re
 import sqlite3
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -39,6 +41,15 @@ class SourceRow:
     inference_enabled: bool
 
 
+@dataclass(frozen=True)
+class LocalSAESpec:
+    model_id: str
+    source: str
+    layer: int
+    hook_point: str
+    repo_id: str = "jbloom/GPT2-Small-SAEs-Reformatted"
+
+
 class ProbeRequest(BaseModel):
     model_id: str
     source: str
@@ -60,6 +71,9 @@ def create_app() -> FastAPI:
     app.state.catalog_cache = None
     app.state.catalog_cache_time = 0.0
     app.state.cache_db_path = CACHE_DB_PATH
+    app.state.local_runner_lock = threading.Lock()
+    app.state.local_model_cache = {}
+    app.state.local_sae_cache = {}
     init_cache_db(app.state.cache_db_path)
 
     @app.get("/api/health")
@@ -71,6 +85,7 @@ def create_app() -> FastAPI:
         return {
             "cache_ttl_seconds": CACHE_TTL_SECONDS,
             "local_activation_available": local_activation_available(),
+            "local_activation_note": "Currently supports gpt2-small *-res-jb sources.",
         }
 
     @app.get("/api/neuronpedia/catalog")
@@ -114,7 +129,7 @@ def create_app() -> FastAPI:
             return {**hydrate_feature_annotations(app.state.cache_db_path, cached_payload), "cached": True}
         try:
             if body.activation_mode == "local":
-                payload = run_local_topk(body)
+                payload = run_local_topk(app, body)
             else:
                 payload = post_json(
                     f"{NEURONPEDIA_URL}/api/search-topk-by-token",
@@ -217,14 +232,208 @@ def probe_cache_key(payload: dict[str, Any]) -> str:
 
 
 def local_activation_available() -> bool:
-    return False
+    required_modules = ("torch", "transformers", "huggingface_hub", "safetensors")
+    return all(importlib.util.find_spec(module_name) is not None for module_name in required_modules)
 
 
-def run_local_topk(body: ProbeRequest) -> dict[str, Any]:
-    raise RuntimeError(
-        "Local LLM+SAE activation is not implemented in this build yet. "
-        f"Add a local runner for {body.model_id} / {body.source}, then this same server will use it and fetch only missing annotations from Neuronpedia."
+def run_local_topk(app: FastAPI, body: ProbeRequest) -> dict[str, Any]:
+    spec = local_sae_spec(body.model_id, body.source)
+    if spec is None:
+        raise RuntimeError(
+            f"Local activation currently supports only gpt2-small *-res-jb sources; got {body.model_id} / {body.source}."
+        )
+    if not local_activation_available():
+        raise RuntimeError(
+            "Local activation needs torch, transformers, huggingface_hub, and safetensors installed in this environment."
+        )
+    try:
+        with app.state.local_runner_lock:
+            model, tokenizer = load_local_model(app, spec.model_id)
+            sae = load_local_sae(app, spec)
+        return local_topk_by_token(model=model, tokenizer=tokenizer, sae=sae, spec=spec, body=body)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Local activation failed for {body.model_id} / {body.source}: {exc}") from exc
+
+
+def local_sae_spec(model_id: str, source: str) -> LocalSAESpec | None:
+    match = re.match(r"^(\d+)-res-jb$", source)
+    if model_id != "gpt2-small" or not match:
+        return None
+    layer = int(match.group(1))
+    if layer < 0 or layer > 11:
+        return None
+    return LocalSAESpec(
+        model_id=model_id,
+        source=source,
+        layer=layer,
+        hook_point=f"blocks.{layer}.hook_resid_pre",
     )
+
+
+def load_local_model(app: FastAPI, model_id: str) -> tuple[Any, Any]:
+    cached = app.state.local_model_cache.get(model_id)
+    if cached is not None:
+        return cached
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    hf_model_id = huggingface_model_id(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+    model = AutoModelForCausalLM.from_pretrained(hf_model_id, dtype=torch.float32)
+    model.to(device)
+    model.eval()
+    cached = (model, tokenizer)
+    app.state.local_model_cache[model_id] = cached
+    return cached
+
+
+def huggingface_model_id(model_id: str) -> str:
+    return {"gpt2-small": "gpt2"}.get(model_id, model_id)
+
+
+def load_local_sae(app: FastAPI, spec: LocalSAESpec) -> Any:
+    cache_key = (spec.model_id, spec.source)
+    cached = app.state.local_sae_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    import torch
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+
+    cfg_path = hf_hub_download(
+        repo_id=spec.repo_id,
+        filename=f"{spec.hook_point}/cfg.json",
+    )
+    cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+    if int(cfg.get("hook_point_layer", spec.layer)) != spec.layer:
+        raise RuntimeError(f"SAE config layer does not match {spec.source}.")
+    weights_path = hf_hub_download(
+        repo_id=spec.repo_id,
+        filename=f"{spec.hook_point}/sae_weights.safetensors",
+    )
+    state = load_file(weights_path, device="cpu")
+    device = next(load_local_model(app, spec.model_id)[0].parameters()).device
+    sae = StandardSAE(
+        w_enc=_matrix_weight(state, names=("W_enc", "encoder.weight")),
+        b_enc=_vector_weight(state, names=("b_enc", "encoder.bias")),
+        b_dec=_vector_weight(state, names=("b_dec", "bias")),
+        device=device,
+        dtype=torch.float32,
+    )
+    app.state.local_sae_cache[cache_key] = sae
+    return sae
+
+
+class StandardSAE:
+    def __init__(self, *, w_enc: Any, b_enc: Any, b_dec: Any, device: Any, dtype: Any) -> None:
+        if w_enc.shape[0] == b_enc.numel():
+            w_enc = w_enc.T
+        if w_enc.shape[1] != b_enc.numel():
+            raise RuntimeError(f"Could not orient SAE encoder: W_enc={tuple(w_enc.shape)} b_enc={tuple(b_enc.shape)}")
+        if w_enc.shape[0] != b_dec.numel():
+            raise RuntimeError(f"SAE input dimension mismatch: W_enc={tuple(w_enc.shape)} b_dec={tuple(b_dec.shape)}")
+        self.W_enc = w_enc.contiguous().to(device=device, dtype=dtype)
+        self.b_enc = b_enc.contiguous().to(device=device, dtype=dtype)
+        self.b_dec = b_dec.contiguous().to(device=device, dtype=dtype)
+        self.d_sae = int(self.b_enc.numel())
+        self.device = device
+        self.dtype = dtype
+
+    def encode(self, x: Any) -> Any:
+        x = x.to(device=self.device, dtype=self.dtype)
+        return (x - self.b_dec) @ self.W_enc + self.b_enc
+
+
+def local_topk_by_token(*, model: Any, tokenizer: Any, sae: StandardSAE, spec: LocalSAESpec, body: ProbeRequest) -> dict[str, Any]:
+    import torch
+
+    full_ids = tokenizer.encode(body.text, add_special_tokens=True)
+    max_length = min(1024, getattr(model.config, "n_positions", 1024))
+    truncated = len(full_ids) > max_length
+    encoded = tokenizer(body.text, return_tensors="pt", truncation=True, max_length=max_length)
+    device = next(model.parameters()).device
+    input_ids = encoded["input_ids"].to(device)
+    attention_mask = encoded.get("attention_mask")
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+
+    with torch.inference_mode():
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            use_cache=False,
+        )
+        hidden_states = outputs.hidden_states
+        if hidden_states is None:
+            raise RuntimeError("Model did not return hidden_states.")
+        if spec.layer >= len(hidden_states):
+            raise RuntimeError(f"Model returned {len(hidden_states)} hidden states; cannot read {spec.hook_point}.")
+        acts = torch.relu(sae.encode(hidden_states[spec.layer][0])).to(torch.float32)
+        values, indices = torch.topk(acts, k=min(body.top_k, sae.d_sae), dim=-1)
+
+    token_ids = input_ids[0].detach().cpu().tolist()
+    values_cpu = values.detach().cpu().tolist()
+    indices_cpu = indices.detach().cpu().tolist()
+    tokens = []
+    for position, token_id in enumerate(token_ids):
+        tokens.append(
+            {
+                "position": position,
+                "token": tokenizer.convert_ids_to_tokens(int(token_id)),
+                "token_text": decode_token_text(tokenizer, int(token_id)),
+                "top": [
+                    {
+                        "component": int(indices_cpu[position][rank]),
+                        "score": float(values_cpu[position][rank]),
+                        "label": "",
+                        "density": None,
+                        "source_url": feature_url(body.model_id, body.source, int(indices_cpu[position][rank])),
+                    }
+                    for rank in range(len(indices_cpu[position]))
+                ],
+            }
+        )
+    return {
+        "model_name": body.model_id,
+        "layer": body.source,
+        "source": body.source,
+        "top_k": int(body.top_k),
+        "activation_mode": "local",
+        "tokens": tokens,
+        "seq_len": len(tokens),
+        "truncated": bool(truncated),
+        "n_components": int(sae.d_sae),
+    }
+
+
+def decode_token_text(tokenizer: Any, token_id: int) -> str:
+    return tokenizer.decode([int(token_id)], clean_up_tokenization_spaces=False)
+
+
+def _matrix_weight(state: dict[str, Any], *, names: tuple[str, ...]) -> Any:
+    import torch
+
+    for name in names:
+        value = state.get(name)
+        if isinstance(value, torch.Tensor) and value.dim() == 2:
+            return value.detach().to(torch.float32)
+    raise RuntimeError(f"Missing SAE matrix weight; tried {names}.")
+
+
+def _vector_weight(state: dict[str, Any], *, names: tuple[str, ...]) -> Any:
+    import torch
+
+    for name in names:
+        value = state.get(name)
+        if isinstance(value, torch.Tensor):
+            value = value.detach().flatten().to(torch.float32)
+            if value.numel() > 0:
+                return value
+    raise RuntimeError(f"Missing SAE vector weight; tried {names}.")
 
 
 def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_seconds: int) -> None:
@@ -585,6 +794,17 @@ def normalize_probe_payload(
     top_k: int,
     activation_mode: str = "neuronpedia",
 ) -> dict[str, Any]:
+    if "tokens" in payload and "results" not in payload:
+        payload["model_name"] = str(payload.get("model_name") or model_id)
+        payload["layer"] = str(payload.get("layer") or source)
+        payload["source"] = str(payload.get("source") or source)
+        payload["top_k"] = int(payload.get("top_k") or top_k)
+        payload["activation_mode"] = str(payload.get("activation_mode") or activation_mode)
+        payload["seq_len"] = int(payload.get("seq_len") or len(payload.get("tokens") or []))
+        payload["truncated"] = bool(payload.get("truncated", False))
+        payload.setdefault("n_components", None)
+        return payload
+
     tokens = []
     for item in payload.get("results") or []:
         top = []

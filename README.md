@@ -20,5 +20,5 @@ Models and layers/sources come from Neuronpedia's public resources list. A `*` i
 - The model/source catalog is cached in memory and persisted in `data/cache.sqlite` for 24 hours.
 - Probe requests are proxied to `https://www.neuronpedia.org/api/search-topk-by-token` and cached in SQLite for 24 hours by model, source, prompt, and probe settings.
 - Individual feature annotations are also cached for 24 hours by model, source, and component so labels can be reused across prompts.
-- The run mode switch supports Neuronpedia-hosted activations, or local activations with Neuronpedia used only for missing annotations. Local activation mode is wired into this FastAPI server, but the in-process LLM+SAE runner still needs to be implemented.
+- The run mode switch supports Neuronpedia-hosted activations, or local activations with Neuronpedia used only for missing annotations. The built-in local runner currently supports `gpt2-small` `*-res-jb` sources and downloads the matching GPT-2/SAE weights into the Hugging Face cache on first use.
 - No local model or SAE checkpoint download is needed.

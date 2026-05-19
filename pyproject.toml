@@ -5,6 +5,10 @@ description = "Unofficial local prompt explorer for SAE activations, using Neuro
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.110",
+  "huggingface-hub>=0.23",
+  "safetensors>=0.4",
+  "torch>=2.2",
+  "transformers>=4.40",
   "uvicorn[standard]>=0.29",
 ]
 
