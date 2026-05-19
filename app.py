@@ -32,6 +32,7 @@ CACHE_DB_PATH = DATA_DIR / "cache.sqlite"
 NEURONPEDIA_URL = "https://www.neuronpedia.org"
 CACHE_TTL_SECONDS = 24 * 60 * 60
 CATALOG_CACHE_KEY = "catalog:v3"
+ANNOTATION_LABEL_POLICY = "scored-oai-4o-mini-v1"
 
 
 @dataclass(frozen=True)
@@ -183,6 +184,7 @@ def init_cache_db(path: Path) -> None:
                 source TEXT NOT NULL,
                 component INTEGER NOT NULL,
                 label TEXT NOT NULL,
+                label_policy TEXT NOT NULL DEFAULT '',
                 density_json TEXT,
                 source_url TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
@@ -192,6 +194,9 @@ def init_cache_db(path: Path) -> None:
             )
             """
         )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(feature_annotations)").fetchall()}
+        if "label_policy" not in columns:
+            conn.execute("ALTER TABLE feature_annotations ADD COLUMN label_policy TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_feature_annotations_expires_at ON feature_annotations(expires_at)")
 
 
@@ -229,7 +234,7 @@ def cache_set(path: Path, key: str, value: dict[str, Any], *, ttl_seconds: int) 
 
 def probe_cache_key(payload: dict[str, Any]) -> str:
     blob = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return f"probe:v2:{hashlib.sha256(blob).hexdigest()}"
+    return f"probe:v3:{hashlib.sha256(blob).hexdigest()}"
 
 
 def local_activation_available() -> bool:
@@ -526,6 +531,7 @@ def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_
             source,
             component,
             label,
+            ANNOTATION_LABEL_POLICY,
             json.dumps(density, separators=(",", ":"), sort_keys=True) if density is not None else None,
             source_url,
             now,
@@ -538,11 +544,12 @@ def cache_feature_annotations(path: Path, probe_payload: dict[str, Any], *, ttl_
         conn.executemany(
             """
             INSERT INTO feature_annotations (
-                model_id, source, component, label, density_json, source_url, created_at, updated_at, expires_at
+                model_id, source, component, label, label_policy, density_json, source_url, created_at, updated_at, expires_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(model_id, source, component) DO UPDATE SET
                 label = excluded.label,
+                label_policy = excluded.label_policy,
                 density_json = excluded.density_json,
                 source_url = excluded.source_url,
                 updated_at = excluded.updated_at,
@@ -637,13 +644,13 @@ def hydrate_feature_annotations(path: Path, probe_payload: dict[str, Any]) -> di
 
     now = int(time.time())
     placeholders = ",".join("?" for _ in components)
-    params: list[Any] = [model_id, source, now, *components]
+    params: list[Any] = [model_id, source, ANNOTATION_LABEL_POLICY, now, *components]
     with sqlite3.connect(path) as conn:
         rows = conn.execute(
             f"""
             SELECT component, label, density_json, source_url
             FROM feature_annotations
-            WHERE model_id = ? AND source = ? AND expires_at >= ? AND component IN ({placeholders})
+            WHERE model_id = ? AND source = ? AND label_policy = ? AND expires_at >= ? AND component IN ({placeholders})
             """,
             params,
         ).fetchall()
@@ -901,10 +908,50 @@ def normalize_probe_payload(
 
 
 def first_explanation_label(feature_blob: dict[str, Any]) -> str:
-    explanations = feature_blob.get("explanations") or []
-    if explanations and isinstance(explanations[0], dict):
-        return str(explanations[0].get("description") or "").strip()
+    explanation = preferred_explanation(feature_blob)
+    if explanation:
+        return str(explanation.get("description") or "").strip()
     return ""
+
+
+def preferred_explanation(feature_blob: dict[str, Any]) -> dict[str, Any] | None:
+    explanations = feature_blob.get("explanations") or []
+    candidates = [
+        (index, explanation)
+        for index, explanation in enumerate(explanations)
+        if isinstance(explanation, dict) and str(explanation.get("description") or "").strip()
+    ]
+    if not candidates:
+        return None
+
+    def rank(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int]:
+        index, explanation = item
+        return (
+            1 if explanation_has_scores(explanation) else 0,
+            1 if str(explanation.get("typeName") or "") == "oai_token-act-pair" else 0,
+            explanation_model_rank(str(explanation.get("explanationModelName") or "")),
+            -index,
+        )
+
+    return max(candidates, key=rank)[1]
+
+
+def explanation_has_scores(explanation: dict[str, Any]) -> bool:
+    scores = explanation.get("scores")
+    if not isinstance(scores, list):
+        return False
+    return any(isinstance(score, dict) for score in scores)
+
+
+def explanation_model_rank(model_name: str) -> int:
+    normalized = model_name.strip().lower()
+    if normalized == "gpt-4o-mini":
+        return 3
+    if normalized.startswith("gpt-4"):
+        return 2
+    if normalized == "gpt-3.5-turbo":
+        return 1
+    return 0
 
 
 def feature_url(model_id: str, source: str, component: Any) -> str:
